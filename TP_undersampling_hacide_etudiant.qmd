@@ -1,0 +1,312 @@
+---
+title: "TP : sous-échantillonner une classe majoritaire"
+subtitle: "Sous-échantillonnage aléatoire et liens de Tomek sur le jeu `hacide`"
+author: "Imad"
+date: today
+lang: fr
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    code-copy: true
+    df-print: kable
+    theme: cosmo
+    fig-width: 6
+    fig-height: 4.5
+    fig-align: center
+    embed-resources: true
+execute:
+  error: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    comment: "#>"
+---
+
+::: {.callout-note appearance="simple" icon="false"}
+**Durée : 20 minutes.**
+
+**Le problème.** Le jeu `hacide` (package `ROSE`) contient des individus décrits par deux variables, `x1` et `x2`, et une classe `cls`. La classe `1` ne représente que **2 %** des individus : elle est très **sous-représentée**. Un modèle entraîné tel quel apprend surtout à répondre `0`.
+
+**L'idée du TP.** Plutôt que d'ajouter des individus de classe `1`, on va **retirer des individus de classe `0`** (sous-échantillonnage, ou *undersampling*). On compare deux façons de le faire :
+
+1.  le **sous-échantillonnage aléatoire** : on tire au hasard les individus `0` à garder ;
+2.  les **liens de Tomek** : on retire seulement les individus `0` qui « gênent » à la frontière avec la classe `1`.
+
+Avec seulement deux variables, on peut **voir** sur un graphique ce que fait chaque méthode.
+
+**Mode d'emploi.** Le code est déjà écrit en grande partie. Il vous reste à remplacer chaque `___` (lignes marquées `# ✎`), puis à exécuter le bloc. Les questions en **gras** appellent une réponse courte.
+:::
+
+```{r}
+#| label: packages
+library(ROSE)     # jeu de données hacide
+library(ggplot2)
+library(recipes)  # préparation des données
+library(themis)   # sous-échantillonnage : step_downsample()
+library(FNN)      # recherche des plus proches voisins
+
+data(hacide)      # charge hacide.train et hacide.test
+```
+
+# Découvrir les données (≈ 3 min)
+
+Le jeu est **déjà séparé** en deux : `hacide.train` (apprentissage) et `hacide.test` (test). Comptez les individus de chaque classe dans l'apprentissage et le test.
+
+```{r}
+#| label: comptage
+table(hacide.train$___)  # ✎
+table(hacide.test$cls)
+```
+
+```{r}
+#| label: nuage
+ggplot(hacide.train, aes(x1, x2, colour = cls)) +
+  geom_point(size = 1.8) +
+  scale_colour_manual(values = c(`0` = "grey65", `1` = "#D1495B")) +
+  coord_equal() +
+  labs(title = "Apprentissage : 980 individus « 0 » pour 20 individus « 1 »")
+```
+
+Un modèle « paresseux » qui répond **toujours `0`** aurait comme *accuracy* (taux de bonnes réponses) la part de `0` dans le test :
+
+```{r}
+#| label: naif
+mean(hacide.test$cls == ___)  # ✎
+```
+
+**Question 1.** Ce modèle a-t-il une bonne *accuracy* ? Combien d'individus `1` trouve-t-il ? Que penser de l'*accuracy* ici ?
+
+> *Votre réponse :*
+
+# Le modèle de référence (≈ 4 min)
+
+## Le modèle : les k plus proches voisins
+
+Pour classer un nouvel individu, on regarde ses **5 plus proches voisins** dans l'apprentissage. La probabilité d'être `1` est la **part de voisins de classe `1`**. Si elle dépasse 0,5 (au moins 3 voisins sur 5), on prédit `1`.
+
+Ces trois fonctions sont **fournies**. Lisez leurs commentaires, sans chercher à tout comprendre.
+
+```{r}
+#| label: outils
+# 1) Probabilité d'être "1" = part de voisins "1" parmi les k plus proches
+predire_knn <- function(train, nouveaux, k = 5) {
+  vois <- get.knnx(as.matrix(train[, c("x1", "x2")]),
+                   as.matrix(nouveaux[, c("x1", "x2")]), k = k)$nn.index
+  rowMeans(matrix(train$cls[vois] == "1", ncol = k))
+}
+
+# 2) Évaluation sur le test, avec un seuil de 0,5
+evaluer <- function(prob, verite, seuil = 0.5) {
+  y <- verite == "1"
+  p <- prob >= seuil
+  VP <- sum(p & y); FP <- sum(p & !y); FN <- sum(!p & y)
+  sens <- VP / (VP + FN)
+  prec <- ifelse(VP + FP == 0, 0, VP / (VP + FP))
+  r <- rank(prob)
+  data.frame(
+    trouves         = VP,   # individus "1" bien détectés
+    rates           = FN,   # individus "1" non détectés
+    fausses_alertes = FP,   # individus "0" détectés à tort comme "1"
+    sensibilite = round(sens, 2),
+    precision   = round(prec, 2),
+    F1          = round(ifelse(sens + prec == 0, 0, 2 * sens * prec / (sens + prec)), 2),
+    AUC         = round((sum(r[y]) - sum(y) * (sum(y) + 1) / 2) / (sum(y) * sum(!y)), 2)
+  )
+}
+
+# 3) Carte : zone où le modèle prédit "1" (en rose), avec les données d'apprentissage
+carte <- function(train, titre) {
+  grille <- expand.grid(x1 = seq(-4, 2.2, length.out = 150),
+                        x2 = seq(-3.5, 3.3, length.out = 150))
+  grille$zone <- ifelse(predire_knn(train, grille) >= 0.5, "1", "0")
+  ggplot() +
+    geom_raster(data = grille, aes(x1, x2, fill = zone), alpha = 0.35) +
+    geom_point(data = train, aes(x1, x2, colour = cls), size = 1.2) +
+    scale_fill_manual(values = c(`0` = "white", `1` = "#D1495B"), guide = "none") +
+    scale_colour_manual(values = c(`0` = "grey55", `1` = "#D1495B")) +
+    coord_equal() +
+    labs(title = titre, colour = NULL)
+}
+```
+
+Les métriques renvoyées par `evaluer()` :
+
+- **trouvés / ratés** : individus `1` détectés ou manqués. Ce sont les plus importants.
+- **fausses alertes** : individus `0` détectés à tort comme `1`.
+- **sensibilité** = trouvés / (trouvés + ratés) : part des `1` retrouvés.
+- **précision** = trouvés / (trouvés + fausses alertes) : quand le modèle dit `1`, part de fois où il a raison.
+- **F1** : compromis entre sensibilité et précision.
+- **AUC** : capacité à donner un score plus élevé aux `1` qu'aux `0`, indépendamment du seuil (0,5 = hasard, 1 = parfait).
+
+## Entraîner et évaluer
+
+```{r}
+#| label: reference
+prob_ref <- predire_knn(___, hacide.test)  # ✎
+evaluer(prob_ref, hacide.test$___)  # ✎
+```
+
+```{r}
+#| label: carte-ref
+carte(hacide.train, "Référence : aucun sous-échantillonnage")
+```
+
+**Question 2.** Combien d'individus `1` du test sont ratés ? Sur la carte, où se trouve la zone rose (prédiction `1`) ? Pourquoi certains `1` sont-ils ratés ?
+
+> *Votre réponse :*
+
+# Sous-échantillonnage aléatoire (≈ 5 min)
+
+**Principe.** On garde **tous** les individus `1` et on tire **au hasard** autant d'individus `0`. L'apprentissage devient équilibré, à 50 / 50.
+
+```         
+Avant :  0 ██████████████████████████████████  (980)
+         1 █                                   (20)
+Après :  0 █                                   (20, tirés au hasard)
+         1 █                                   (20)
+```
+
+Le paramètre `under_ratio` fixe le rapport « effectif de `0` / effectif de `1` » visé : `1` donne des classes égales.
+
+```{r}
+#| label: downsample
+train_down <- recipe(cls ~ ., data = hacide.train) |>
+  ___(cls, under_ratio = ___, seed = 2026) |>  # ✎
+  prep() |>
+  bake(new_data = NULL)
+
+table(train_down$cls)
+```
+
+On réutilise le même modèle sur ces données, puis on l'évalue **sur le test d'origine**, qui n'a pas été modifié.
+
+```{r}
+#| label: modele-down
+prob_down <- predire_knn(___, hacide.test)  # ✎
+evaluer(prob_down, hacide.test$cls)
+```
+
+```{r}
+#| label: carte-down
+carte(train_down, "Sous-échantillonnage aléatoire")
+```
+
+**Question 3.** Combien d'individus `1` sont maintenant ratés ? Que s'est-il passé pour les fausses alertes ? Expliquez avec la carte. Quelle part des `0` a-t-on jetée ?
+
+> *Votre réponse :*
+
+# Les liens de Tomek (≈ 6 min)
+
+**Principe.** Deux individus forment un **lien de Tomek** si :
+
+1.  ils sont de **classes différentes** (un `1` et un `0`) ;
+2.  chacun est le **plus proche voisin de l'autre**.
+
+Un tel couple se trouve à la **frontière** entre les classes. Le `0` du couple « masque » le `1` : on le **retire**. Contrairement au tirage aléatoire, on ne retire pas n'importe qui, mais seulement les `0` gênants.
+
+## Trouver les liens
+
+La fonction ci-dessous calcule d'abord `nn`, le plus proche voisin de chaque individu (ligne fournie). Complétez les deux conditions.
+
+*Astuce :* si `nn[i]` est le voisin de `i`, alors `nn[nn[i]]` est le voisin du voisin. Pour un lien, il doit revenir à `i`.
+
+```{r}
+#| label: liens-tomek
+liens_tomek <- function(X, y) {
+  X <- as.matrix(X)
+  # plus proche voisin de chaque individu (en excluant l'individu lui-même)
+  vois <- get.knnx(X, X, k = 2)$nn.index
+  nn   <- ifelse(vois[, 1] == seq_len(nrow(X)), vois[, 2], vois[, 1])
+
+  mutuel <- nn[nn] == ___   # ✎ condition 2 : voisins l'un de l'autre
+  oppose <- y != ___                # ✎ condition 1 : classes différentes
+
+  i <- which(mutuel & oppose)
+  i <- i[i < nn[i]]                  # chaque couple compté une seule fois
+  data.frame(i = i, j = nn[i])
+}
+
+liens <- liens_tomek(hacide.train[, c("x1", "x2")], hacide.train$cls)
+liens
+```
+
+## Voir les liens
+
+Ce code est fourni. Chaque trait relie un couple de Tomek ; les points entourés sont les `0` qui vont être retirés.
+
+```{r}
+#| label: voir-liens
+#| fig-height: 5
+lies     <- c(liens$i, liens$j)
+a_retirer <- lies[hacide.train$cls[lies] == ___]  # ✎
+
+ggplot(hacide.train, aes(x1, x2, colour = cls)) +
+  geom_point(size = 1.8) +
+  geom_segment(data = data.frame(x  = hacide.train$x1[liens$i], y  = hacide.train$x2[liens$i],
+                                 xe = hacide.train$x1[liens$j], ye = hacide.train$x2[liens$j]),
+               aes(x = x, y = y, xend = xe, yend = ye), colour = "black", linewidth = 0.8) +
+  geom_point(data = hacide.train[a_retirer, ], shape = 21, size = 5, colour = "black") +
+  scale_colour_manual(values = c(`0` = "grey65", `1` = "#D1495B")) +
+  coord_equal() +
+  labs(title = paste(nrow(liens), "liens de Tomek"), colour = NULL)
+```
+
+## Retirer les `0` et réentraîner
+
+```{r}
+#| label: tomek
+train_tomek <- hacide.train[-___, ]  # ✎
+table(train_tomek$cls)
+
+prob_tomek <- predire_knn(train_tomek, hacide.test)
+evaluer(prob_tomek, hacide.test$cls)
+```
+
+```{r}
+#| label: carte-tomek
+carte(train_tomek, "Liens de Tomek")
+```
+
+::: {.callout-warning title="Attention à `themis::step_tomek()`"}
+La fonction toute faite `step_tomek()` du package `themis` retire **les deux** individus de chaque lien, y compris le `1`. Quand la classe rare ne compte que 20 individus, c'est contre-productif. C'est pour cela qu'on a écrit notre propre version.
+:::
+
+**Question 4.** Combien d'individus `0` Tomek a-t-il retirés ? Où se trouvaient-ils ? Qu'est-ce qui change dans les résultats ?
+
+> *Votre réponse :*
+
+# Bilan (≈ 2 min)
+
+```{r}
+#| label: bilan
+rbind(
+  `Aucun`     = evaluer(prob_ref,   hacide.test$cls),
+  `Aléatoire` = evaluer(prob_down,  hacide.test$cls),
+  `Tomek`     = evaluer(prob_tomek, hacide.test$cls)
+)
+```
+
+**Question 5.** Quelle méthode choisiriez-vous pour rater le moins d'individus `1` ? Quel est son inconvénient ? Quel est le rôle de Tomek ?
+
+> *Votre réponse :*
+
+::: {.callout-tip title="Bonus (si vous avez fini en avance)"}
+Le sous-échantillonnage aléatoire dépend du **hasard du tirage**. Relancez le bloc ci-dessous en changeant la valeur de `seed` (1, 2, 3…). Les résultats changent-ils ?
+:::
+
+```{r}
+#| label: bonus
+train_down2 <- recipe(cls ~ ., data = hacide.train) |>
+  step_downsample(cls, under_ratio = 1, seed = ___) |>  # ✎
+  prep() |>
+  bake(new_data = NULL)
+
+evaluer(predire_knn(train_down2, hacide.test), hacide.test$cls)
+```
+
+**Question 6 (bonus).** Que concluez-vous ?
+
+> *Votre réponse :*
