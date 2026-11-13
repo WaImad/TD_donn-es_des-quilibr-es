@@ -1,7 +1,7 @@
 ---
 title: "TP : sous-échantillonner une classe majoritaire"
 subtitle: "Sous-échantillonnage aléatoire et liens de Tomek sur le jeu `hacide`"
-author: "Imad"
+author: "Imad FARSI  - Thomas DE LAUBIER - Mickael SEGURA - Matis BOUDELIER - Akou DESSI"
 date: today
 lang: fr
 format:
