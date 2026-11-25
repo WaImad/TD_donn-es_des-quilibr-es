@@ -1,7 +1,7 @@
 ---
 title: "TP : sous-échantillonner une classe majoritaire"
 subtitle: "Sous-échantillonnage aléatoire et liens de Tomek sur le jeu `hacide`"
-author: "Imad FARSI  - Thomas DE LAUBIER - Mickael SEGURA - Matis BOUDELIER - Akou DESSI"
+author: "Imad"
 date: today
 lang: fr
 format:
@@ -169,8 +169,7 @@ Après :  0 █                                   (20, tirés au hasard)
          1 █                                   (20)
 ```
 
-Le paramètre `under_ratio` fixe le rapport « effectif de `0` / effectif de `1` » visé : `1` donne des classes égales.
-
+Le paramètre `under_ratio` fixe le rapport « effectif de `0` / effectif de `1` » visé : `1` donne des classes égales. Testez plusieurs valeurs under ration (1,5,10).
 ```{r}
 #| label: downsample
 train_down <- recipe(cls ~ ., data = hacide.train) |>
@@ -209,7 +208,7 @@ Un tel couple se trouve à la **frontière** entre les classes. Le `0` du couple
 
 ## Trouver les liens
 
-La fonction ci-dessous calcule d'abord `nn`, le plus proche voisin de chaque individu (ligne fournie). Complétez les deux conditions.
+La fonction ci-dessous calcule d'abord `nn`, le plus proche voisin de chaque individu (ligne fournie). Complétez les deux conditions. Il est possible de la faire directement avec step_tomek() du package themis, mais on préfère ici comprendre ce qui se passe.
 
 *Astuce :* si `nn[i]` est le voisin de `i`, alors `nn[nn[i]]` est le voisin du voisin. Pour un lien, il doit revenir à `i`.
 
@@ -270,9 +269,21 @@ evaluer(prob_tomek, hacide.test$cls)
 carte(train_tomek, "Liens de Tomek")
 ```
 
-::: {.callout-warning title="Attention à `themis::step_tomek()`"}
-La fonction toute faite `step_tomek()` du package `themis` retire **les deux** individus de chaque lien, y compris le `1`. Quand la classe rare ne compte que 20 individus, c'est contre-productif. C'est pour cela qu'on a écrit notre propre version.
-:::
+
+Nous pouvons faire la même chose avec `step_tomek()` du package `themis`
+```{r}
+# Même résultat avec step_tomek() de themis
+train_tomek_auto <- recipe(cls ~ ., data = hacide.train) |>
+  step_tomek(cls, seed = 2026) |>
+  prep() |>
+  bake(new_data = NULL)
+
+table(train_tomek_auto$cls)
+
+prob_tomek_auto <- predire_knn(train_tomek_auto, hacide.test)
+evaluer(prob_tomek_auto, hacide.test$cls)
+
+```
 
 **Question 4.** Combien d'individus `0` Tomek a-t-il retirés ? Où se trouvaient-ils ? Qu'est-ce qui change dans les résultats ?
 
@@ -308,5 +319,51 @@ evaluer(predire_knn(train_down2, hacide.test), hacide.test$cls)
 ```
 
 **Question 6 (bonus).** Que concluez-vous ?
+
+> *Votre réponse :*
+
+::: {.callout-tip title="Bonus 2 : aller plus loin avec SMOTE"}
+Plutôt que de **retirer** des individus `0`, on peut **générer** des individus `1` synthétiques avec SMOTE (*Synthetic Minority Over-sampling Technique*). On peut aussi combiner les approches : suréchantillonner avec SMOTE puis nettoyer la frontière avec Tomek.
+:::
+
+```{r}
+#| label: bonus-smote
+# SMOTE seul : on génère des individus synthétiques de classe 1
+train_smote <- recipe(cls ~ ., data = hacide.train) |>
+  step_smote(cls, over_ratio = 1, seed = 2026) |>
+  prep() |>
+  bake(new_data = NULL)
+
+table(train_smote$cls)
+
+prob_smote <- predire_knn(train_smote, hacide.test)
+```
+
+```{r}
+#| label: bonus-smote-tomek
+# SMOTE + Tomek : on suréchantillonne puis on nettoie la frontière
+train_smote_tomek <- recipe(cls ~ ., data = hacide.train) |>
+  step_smote(cls, over_ratio = 1, seed = 2026) |>
+  step_tomek(cls) |>
+  prep() |>
+  bake(new_data = NULL)
+
+table(train_smote_tomek$cls)
+
+prob_smote_tomek <- predire_knn(train_smote_tomek, hacide.test)
+```
+
+```{r}
+#| label: bilan-bonus
+rbind(
+  `Aucun`        = evaluer(prob_ref,         hacide.test$cls),
+  `Aléatoire`    = evaluer(prob_down,        hacide.test$cls),
+  `Tomek`        = evaluer(prob_tomek,       hacide.test$cls),
+  `SMOTE`        = evaluer(prob_smote,       hacide.test$cls),
+  `SMOTE + Tomek`= evaluer(prob_smote_tomek, hacide.test$cls)
+)
+```
+
+**Question 7 (bonus).** SMOTE améliore-t-il les résultats par rapport au sous-échantillonnage ? Quel est l'avantage de combiner SMOTE et Tomek ?
 
 > *Votre réponse :*
